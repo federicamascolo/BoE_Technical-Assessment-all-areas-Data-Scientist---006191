@@ -1,0 +1,469 @@
+---
+title: "BoE_Technical Assessmnet"
+author: "Federica Mascolo"
+date: "2/26/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(magrittr)
+library(ggplot2)
+library(readr)
+library(openxlsx)
+library(dplyr)
+library(tidyr)
+
+library(skimr)
+library(DataExplorer)
+library(glmnet)
+library(caTools)
+library(ROCR)
+
+```
+
+
+```{r, echo =FALSE}
+setwd("C:/Users/feder/Desktop/Applications/Applications varie/21-22/BoE_technical assessment")
+df <- read.xlsx("Data for technical assessment.xlsx")
+```
+
+
+```{r, echo = FALSE}
+# clean currency symbol and rename
+names(df) <- gsub("\\(£m)", "", names(df))
+names(df) <- gsub("\\.", "_", names(df))
+
+#rename(df, 'equity' = "Excess_of_assets_over_liabilities__[=_equity]")
+
+#define a list of varying "varname"
+varname <- c('NWP', 'SCR', 'EoF_for_SCR', 'SCR_coverage_ratio' , 'GWP', 'Total_asset' , 'Total_liabilities', 'Excess_of_assets_over_liabilities__[=_equity]')
+
+#define the most recent year in the dataset for each variable
+n <- c(20, 20, 20, 20, 20, 20, 20, 20) 
+
+#add the year to the variable name
+names(df)[2:ncol(df)] <- unlist(mapply(function(x,y) paste(x, seq(16,y), sep="_"), varname, n))
+
+names(df)[37] <- "equity_16"
+names(df)[38] <- "equity_17"
+names(df)[39] <- "equity_18"
+names(df)[40] <- "equity_19"
+names(df)[41] <- "equity_20"
+names(df)[1]  <- "firm_id"
+
+df <- subset(df, firm_id != "year")
+
+```
+
+ 
+
+```{r, echo = FALSE, results = 'hide'}
+
+# data type 
+sapply(df, is.numeric)
+
+# convert all vars to numeric 
+cols <- names(df)[2:41]
+df[cols] <- lapply(df[cols], as.numeric)
+
+# Basic information on the dataset: no missing, no duplicates 
+skim(df)
+# automatic report 
+DataExplorer:: create_report(
+	df,
+	config = list(
+		"introduce" = list(),
+		"plot_str" = list(
+			"type" = "diagonal",
+			"fontSize" = 35,
+			"width" = 1000,
+			"margin" = list("left" = 350, "right" = 250)
+		),
+	
+	"plot_missing" = list(),
+  "plot_histogram" = list(),
+  "plot_density" = list(),
+  "plot_qq" = list(sampled_rows = 1000L),
+  "plot_correlation" = list("cor_args" = list("use" = "pairwise.complete.obs")),
+  "plot_prcomp" = list(),
+  "plot_boxplot" = list(),
+  "plot_scatterplot" = list(sampled_rows = 1000L)
+
+ 
+	)
+)
+
+# Further look at the correlation matrix
+#library("Hmisc")
+#df_c <- df[2:41]
+#corr_matrix <- rcorr(as.matrix(df_c))
+#corr_matrix
+
+
+
+```
+
+# Task I: Important firms 
+
+Firm size: GWP and Total assets have been used as proxies for firm size. The histograms below show the first 40 firms with the highest values of GWP and Total assets for 2020. The scatterplots show the two measures jointly. On the x-axes the GWP in 2020. 
+
+
+```{r, echo = FALSE, warning= FALSE}
+
+# Variables inspected for firm size: GWP and total assets 
+
+# GWP: plot the first 40 frims (bit more then 10% of the sample) wiht the highest GWP in 2020 
+firm_size <- df[c(1, 26)]
+firm_size <- as.data.frame(firm_size)
+
+firm_size_2 <-firm_size[order(-firm_size$GWP_20),]
+firm_size_top <- firm_size_2[1:40,]
+
+plot_size <- ggplot(firm_size_top, aes(x = reorder(firm_id, GWP_20), y = GWP_20)) + 
+  geom_col(width = 0.5, fill="#69b3a2", color="#e9ecef", alpha=0.8) +
+  coord_flip() +
+  theme(axis.text.y = element_text( size = 8))
+
+
+plot_size 
+
+
+# Total assets: proxy for firm size 
+firm_size2 <- df[c(1, 31)]
+firm_size2 <- as.data.frame(firm_size2)
+
+# trim the lower part of the distribution since we are interested in big firms 
+lower_quantile <- quantile(firm_size2$Total_asset_20, 0.1, na.rm = TRUE)
+
+# col a where a > its 90th percentile becomes NA
+firm_size2$Total_asset_20[firm_size2$Total_asset_20 < lower_quantile] <- NA
+
+# Plot the first 40 firms with highest total assets
+firm_size_2 <-firm_size2[order(-firm_size2$Total_asset_20),]
+firm_size_top2 <- firm_size_2[1:40,]
+
+plot_size <- ggplot(firm_size_top2, aes(x = reorder(firm_id, Total_asset_20), y = Total_asset_20)) + 
+  geom_col(width = 0.5, fill="#69b3a2", color="#e9ecef", alpha=0.8) +
+  coord_flip() +
+  theme(axis.text.y = element_text( size = 8))
+
+plot_size 
+
+
+# Scatterplot of the two variables 
+
+#Leave out zeros from the joint sample 
+firm_size_joint <- df[c(1, 26, 31)]
+firm_size_joint <- subset(firm_size_joint, firm_size_joint$Total_asset != 0 & firm_size_joint$GWP != 0)
+
+
+scatter_size <- ggplot(firm_size_joint, aes(x = GWP_20, 
+               y = Total_asset_20
+               )) + 
+  geom_point(color = "cornflowerblue",
+             alpha = .6,
+             size = 5)
+
+scatter_size 
+
+
+# Let's plot the biggest firms with labels 
+scatter_size <- ggplot(firm_size_joint, aes(x = GWP_20, 
+               y = Total_asset_20
+               )) + 
+  geom_point(color = "cornflowerblue",
+             alpha = .6,
+             size = 2) +
+  xlim(0, 50000.0) + 
+  ylim(50000.0, 350000.0) + 
+   geom_text(aes(label= firm_id) , size = 2.5)
+
+
+scatter_size 
+
+
+```
+
+# SCR coverage ratio as measure of risk: 
+Firms with SCR coverage ratio lower than one should not meet the capital requirements. Therefore is important to check which firms are in this position. 96% of the firms report SCR coverage ratio equal to zero and in the histogram are reported only firms with negative or lower than one value. 
+
+```{r, echo = FALSE, warning= FALSE}
+
+#SCR: check if big firms do not have SCR > 1, not have buffer 
+scr_ratio <- df[c(1,21)]
+
+# check bounds 
+summary(scr_ratio)
+
+# check for outliers
+scr_ratio1 <- subset(scr_ratio, SCR_coverage_ratio_20 > 1000 )
+
+# clean outliers
+scr_ratio <- subset(scr_ratio, SCR_coverage_ratio_20 < 1000 )
+
+# Plot the distribution: it is already in the general report, firms with negative coverage ratio need attention or below 100% need attention 
+scr_ratio  <- scr_ratio[order(scr_ratio$SCR_coverage_ratio_20),]
+
+# check: about 96% of obs have cov_ratio equal to zero, only two firms have negative cov ratio 
+scr_ratio_less1  <- subset(scr_ratio, SCR_coverage_ratio_20 < 1 & SCR_coverage_ratio_20 != 0)
+
+plot_ratio <- ggplot(scr_ratio_less1, aes(x = reorder(firm_id,SCR_coverage_ratio_20 ), 
+                                    y = SCR_coverage_ratio_20)) + 
+  geom_col(width = 0.5, fill="#69b3a2", color="#e9ecef", alpha=0.8) + 
+  coord_flip()
+
+# Firm 141 and 109 
+plot_ratio
+
+```
+
+# Gross claims incurred:  
+The change between 2020 and 2019 in Gross claims incurred can be considered if the objective is to allocate resources to important firms. The variable indicates a large cost for the insurer to check over time.
+```{r , echo = FALSE}
+setwd("C:/Users/feder/Desktop/Applications/Applications varie/21-22/BoE_technical assessment")
+df_under <- read.xlsx("Data for technical assessment.xlsx", sheet = "Dataset 2 - Underwriting")
+```
+
+The first histograms show the first two firms with the biggest percentage change in the gross claims incurred between 2019 and 2020. While the second shows from the third to the 40th firm with the bigger percentage change in the same variable. Finally, the scatterplot shows firms with higher values for total assets and Gross claims incurred. 
+```{r , echo = FALSE}
+
+names(df_under) <- gsub("\\(£m)", "", names(df_under))
+names(df_under) <- gsub("\\.", "_", names(df_under))
+
+#define a list of varying "varname"
+varname <- c('Gross_claims_incurred', 'Gross_BEL_(inc__TPs_as_whole,_pre-TMTP)_', 'Net_BEL_(inc__TPs_as_a_whole,_pre-TMTP)_', 'Pure_net_claims_ratio' , 'Net_expense_ratio', 'Net_combined_ratio' , 'Pure_gross_claims_ratio', 'Gross_expense_ratio', 'Gross_combined_ratio')
+
+#define the most recent year in the dataset for each variable
+n <- c(20, 20, 20, 20, 20, 20, 20, 20, 20) 
+
+#add the year to the variable name
+names(df_under)[2:ncol(df_under)] <- unlist(mapply(function(x,y) paste(x, seq(16,y), sep="_"), varname, n))
+
+
+names(df_under)[1]  <- "firm_id"
+df_under <- subset(df_under, firm_id  != "")
+
+# convert all vars to numeric 
+cols <- names(df_under)[2:46]
+df_under[cols] <- lapply(df_under[cols], as.numeric)
+
+```
+
+
+```{r, echo =FALSE}
+# gen percentage change in gross claims incurred: big change may indicate a not stable position for the firm
+
+df_under <- df_under %>%
+   mutate(per_change_gci = 
+            (
+              ifelse( Gross_claims_incurred_20 <0 & Gross_claims_incurred_19 <0, 
+                -( ((Gross_claims_incurred_20 - Gross_claims_incurred_19)/Gross_claims_incurred_19)*100),
+          ((Gross_claims_incurred_20 - Gross_claims_incurred_19)/Gross_claims_incurred_19)*100)))
+
+df_change_gci <- df_under[c(1,47)]
+df_pos_gci <- subset(df_change_gci, (!is.na(df_change_gci$per_change_gci) & df_change_gci$per_change_gci > 0) & df_change_gci$per_change_gci != Inf )
+
+# Select the 40 higest change 
+df_pos_gci <- df_pos_gci[order(-df_pos_gci$per_change_gci),]
+
+# after subsetting for the first 40 firms, suggested to leave out the first 2 or three highest to see better the size of the remaining and understand the how the change of the firm at the margin compare to the others. 
+df_pos_gci_top_2 <- df_pos_gci[1:2,]
+
+### Important: leaving out the first two highest changes 
+df_pos_gci_top <- df_pos_gci[3:40,]
+
+
+# Positive changes indicates a large cost for an insurer that may needs funds 
+plot_changes <- ggplot(df_pos_gci_top_2, aes(x = reorder(firm_id, per_change_gci), 
+                                          y = per_change_gci )) + 
+  geom_col(width = 0.5, fill="#69b3a2", color="#e9ecef", alpha=0.8) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+plot_changes
+
+
+
+
+# Positive changes indicates a large cost for an insurer that may needs funds 
+plot_changes <- ggplot(df_pos_gci_top, aes(x = reorder(firm_id, per_change_gci), 
+                                          y = per_change_gci )) + 
+  geom_col(width = 0.5, fill="#69b3a2", color="#e9ecef", alpha=0.8) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+plot_changes
+
+
+
+# Joint plot firm with biggest change and assets 
+
+#merge the dataset on firms 
+#round(firm_size2$Total_asset, digits = 6)
+merged <- merge(df_pos_gci_top, firm_size2, by  = "firm_id" )
+
+
+
+# Scatterplot of the two variables 
+scatter_change_size <- ggplot(merged, aes(x = per_change_gci, 
+               y = Total_asset_20
+               )) + 
+  geom_point(color = "cornflowerblue",
+             alpha = .6,
+             size = 3) +
+  xlim(0, 20000.0) + 
+  ylim(0, 350000.0) 
+
+scatter_change_size 
+
+
+# Scatterplot of the two variables: change size to exclude extreme values 
+scatter_change_size <- ggplot(merged, aes(x = per_change_gci, 
+               y = Total_asset_20
+               )) + 
+  geom_point(color = "cornflowerblue",
+             alpha = .6,
+             size = 3) +
+  xlim(0, 3000.0) + 
+  ylim(0, 3000.0) + 
+   geom_text(aes(label= firm_id) , size = 2.5)
+
+scatter_change_size 
+
+# select only frims with values of both variables higher than the third quartile
+summary(merged)
+# per_change_gci = 106 
+# Tot_asset = 42
+
+# Create a subset for the firms with percentage change in gci and total assets higher than the mean values. 
+resources_to_all <- subset(merged, per_change_gci >= 107 & Total_asset_20 >=42)
+
+```
+
+
+```{r , echo=FALSE}
+df_full <- merge(df, df_under, by = "firm_id")
+
+# convert all vars to numeric 
+cols <- names(df_full)[2:87]
+df_full[cols] <- lapply(df_full[cols], as.numeric)
+
+```
+
+# Selection of firms: 
+
+Considering total assets and Gross claims incurred as the most important measure to allocate resources to a firm, the dataset below shows the biggest firms in terms of total assets and those with the highest claims. To validate the analysis the dataset shows the percentage deviation from the mean values and the variance by firm of both variables 
+```{r, echo = FALSE }
+
+# merge with full dataset to check the two variabels over time 
+resources_to_all_ts <- merge(resources_to_all, df_full, by = "firm_id" )
+
+resources_to_all_ts <- resources_to_all_ts[c(1:3, 29:32, 44:48 )]
+names(resources_to_all_ts)[3] <- "Total_asset_20"
+names(resources_to_all_ts)[2] <- "per_change_gci"
+
+
+# I expect total assets to not devatiate from the mean value (otherwise there can be reporting error, while for the detected firms I would expect the change in claims to devate from the mean value)
+
+resources_to_all_ts <- resources_to_all_ts %>%
+  mutate(mean_tot_asset = (Total_asset_16 + Total_asset_17 + Total_asset_18 + Total_asset_19)/ 4,
+         mean_gci = (Gross_claims_incurred_16 + Gross_claims_incurred_17 + Gross_claims_incurred_18 + Gross_claims_incurred_19)/4, 
+         per_dev_tot_asset = ((Total_asset_20 - mean_tot_asset)/ mean_tot_asset) *100, 
+         per_dev_gci = ((Gross_claims_incurred_20 - mean_gci)/ mean_gci)*100 , 
+
+         )
+
+
+resources_to_all_ts <- resources_to_all_ts %>%
+  mutate(mean_tot_asset = (Total_asset_16 + Total_asset_17 + Total_asset_18 + Total_asset_19 + Total_asset_20)/ 5,
+         mean_gci = (Gross_claims_incurred_16 + Gross_claims_incurred_17 + Gross_claims_incurred_18 + Gross_claims_incurred_19 + Gross_claims_incurred_20 )/5, 
+         var_gci = (
+           (Gross_claims_incurred_16  - mean_gci)^2 + (Gross_claims_incurred_17 - mean_gci)^2 + (Gross_claims_incurred_18 - mean_gci)^2 + (Gross_claims_incurred_19 - mean_gci)^2 + (Gross_claims_incurred_20 - mean_gci )^2 )/4 ,
+        var_tot_asset = (
+         ( Total_asset_16 - mean_tot_asset)^2 +  ( Total_asset_17 - mean_tot_asset)^2 +  ( Total_asset_18 - mean_tot_asset)^2 +  ( Total_asset_19 - mean_tot_asset)^2 +  ( Total_asset_20 - mean_tot_asset)^2 )/4
+         )
+
+
+round_df <- function(x, digits) {
+    # round all numeric variables
+    # x: data frame 
+    # digits: number of digits to round
+    numeric_columns <- sapply(x, mode) == 'numeric'
+    x[numeric_columns] <-  round(x[numeric_columns], digits)
+    x
+}
+
+# Inspect the data 
+resources_to_all_ts <- round_df(resources_to_all_ts, 4)
+
+resources_to_all_ts <- resources_to_all_ts[c(1:3, 15:18)]
+
+#kable(head(resources_to_all_ts, n=8), format = "markdown")
+
+head(resources_to_all_ts, n=8)
+```
+
+
+# Task II: ML classifification of healthy/unhealthy firms 
+```{r, echo = FALSE, warning = FALSE }
+
+# y variable: equity in 2020 
+summary(df_full$equity_20)
+
+
+# y varibale 
+df_full <- df_full  %>%
+   mutate( h_firm = ifelse(equity_20 > 0, 1 ,0))   
+summary(df_full$h_firm)
+
+df_full <- df_full[c(2:26, 37:40, 42:86, 88)]
+
+
+set.seed(2)
+
+split = sample.split(df_full$h_firm, SplitRatio = 6/10)
+train = subset(df_full, split == TRUE)
+test= subset(df_full, split == FALSE)
+
+
+x.train = model.matrix(h_firm ~ . , data = train)
+y.train = (train$h_firm)
+
+x.test = model.matrix(h_firm ~ ., data =test)
+y.test = (test$h_firm)
+
+fit.lasso = glmnet(x.train, y.train, alpha = 1, family = "binomial")
+
+
+#CV lasso 
+cv.lasso = cv.glmnet(x.train, y.train, alpha = 1, family = "binomial", parallel = TRUE)
+par(mfrow = c(1,2))
+plot(fit.lasso, xvar = "lambda", label = TRUE)
+plot(cv.lasso)
+coef(cv.lasso)
+
+pred.lasso = predict(cv.lasso, x.test, s = cv.lasso$lambda.1se, type = "response")
+
+
+#ROC curve 
+predob = prediction(pred.lasso, y.test)
+perf = performance(predob, "tpr", "fpr")
+par(mfrow = c(1,1))
+plot(perf, main = "Lasso test ROC", colorize = TRUE)
+as.numeric(performance(predob, "auc")@y.values)
+
+
+#refit the model with the defined threshold 
+lasso.pred = ifelse(pred.lasso > 0.5, 1, 0)
+
+table = table(test$h_firm, lasso.pred)
+#table
+
+lasso.testerror = 1-sum(diag(table))/sum(table)
+FPR = table[1,2]/(table[1,2] + table[2,2])
+
+
+data.table(lasso.testerror, FPR)
+
+```
+
+
